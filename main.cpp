@@ -19,6 +19,7 @@ SDL_Window *window = nullptr;
 SDL_Texture *tileset = nullptr;
 SDL_Texture *unitSpritesheet = nullptr;
 SDL_Texture *uiSpritesheet = nullptr;
+SDL_Texture *font = nullptr;
 float scale = 4;
 float cameraX = 0, cameraY = 0;
 
@@ -56,13 +57,40 @@ void loadMedia()
 	tileset = loadTexture("data/terrain.bmp");
 	unitSpritesheet = loadTexture("data/units.bmp");
 	uiSpritesheet = loadTexture("data/ui.bmp");
+	font = loadTexture("data/font.bmp");
 }
 
 void freeMedia()
 {
+	SDL_DestroyTexture(font);
 	SDL_DestroyTexture(uiSpritesheet);
 	SDL_DestroyTexture(unitSpritesheet);
 	SDL_DestroyTexture(tileset);
+}
+
+void drawText(int xo, int yo, const char *text, float textScale)
+{
+	int x = xo;
+	int y = yo;
+	for(const char *c = &text[0]; *c != 0; c++)
+	{
+		SDL_Rect src, dst;
+		src.x = (*c % 16) * 6;
+		src.y = (*c / 16) * 8;
+		src.w = 6;
+		src.h = 8;
+		dst.x = x;
+		dst.y = y;
+		dst.w = 6 * textScale;
+		dst.h = 8 * textScale;
+		SDL_RenderCopy(renderer, font, &src, &dst);
+		x += 6 * textScale;
+		if(*c == '\n')
+		{
+			x = xo;
+			y += 8 * textScale;
+		}
+	}
 }
 
 class Level
@@ -132,7 +160,7 @@ class Level
 		cameraY = (cy + 0.5) * tileSize;
 		int r = 20 + rand() % 10;
 		float a1 = 0.03 + (rand() % (int)(PI*20)) / 100.0;
-		float a2 = a1 + (rand() % (int)(PI*50)) / 100.0;
+		float a2 = a1 + (rand() % (int)(PI*70)) / 100.0;
 		for(float a = a1; a < a2; a += 0.05)
 			for(int i = 0; i < r; i++)
 			{
@@ -493,6 +521,7 @@ class Game
 		for(int i = 0; i < MAX_UNITS; i++)
 			if(units[i] != nullptr)
 				units[i]->populateMinimap(level.w, level.h);
+		drawText(5, 5, "This is a test!", 2);
 		SDL_RenderPresent(renderer);
 	}
 
@@ -577,7 +606,10 @@ class Game
 
 		if(clicking)
 			if(!clickUI())
+			{
+				clicking = false;
 				clickMap();
+			}
 
 		cameraX += (keyboardState[SDL_SCANCODE_RIGHT] - keyboardState[SDL_SCANCODE_LEFT]) / (8.0*scale) * 8;
 		cameraY += (keyboardState[SDL_SCANCODE_DOWN] - keyboardState[SDL_SCANCODE_UP]) / (8.0*scale) * 8;
