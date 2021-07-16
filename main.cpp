@@ -3,16 +3,20 @@
 #include <cstdlib>
 #include <cassert>
 #include <cmath>
+#include <cstring>
 
 #define PI 3.14159
-#define MAX_SCALE 8
-#define MIN_SCALE 0.2
+#define MAX_SCALE 4
+#define MIN_SCALE 0.5
 #define MAX_UNITS 200
 #define MINIMAP_SHRINK 6
 #define UI_BORDER 5
-#define MAX_MAPWIDTH 100
-#define MAX_MAPHEIGHT 75
+#define MAX_MAPWIDTH 80
+#define MAX_MAPHEIGHT 70
 #define CELL_SIZE 10
+#define ACTIONMENU_SIZE 5
+#define ACTIONMENU_BOXWIDTH 180
+#define ACTIONMENU_BOXHEIGHT 24
 
 SDL_Renderer *renderer = nullptr;
 SDL_Window *window = nullptr;
@@ -23,10 +27,27 @@ SDL_Texture *font = nullptr;
 float scale = 4;
 float cameraX = 0, cameraY = 0;
 
+typedef enum
+{
+	INFANTRY,
+	ROCKET,
+	TANK,
+	BASE
+}
+unit_t;
+
+typedef enum
+{
+	NO_ACTION,
+	DESELECT_ALL,
+	CANCEL_TASKS
+}
+action_t;
+
 void initSDL()
 {
 	assert(SDL_Init(SDL_INIT_EVERYTHING) >= 0);
-	window = SDL_CreateWindow("Simple RTS", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, SDL_WINDOW_SHOWN);
+	window = SDL_CreateWindow("Simple RTS", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, SDL_WINDOW_RESIZABLE);
 	assert(window != nullptr);
 	renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
 	assert(renderer != nullptr);
@@ -291,7 +312,7 @@ class Level
 		const int s = MINIMAP_SHRINK;
 		int sw, sh;
 		SDL_GetWindowSize(window, &sw, &sh);
-		int xo = sw - w/s - UI_BORDER;
+		int xo = sw - (w/s)/2 - UI_BORDER - ACTIONMENU_BOXWIDTH/2;
 		int yo = UI_BORDER;
 		for(int x = 0; x < w; x += s)
 			for(int y = 0; y < h; y += s)
@@ -327,12 +348,13 @@ class Level
 
 class Unit
 {
-	int type, team;
+	int team;
+	unit_t type;
 	float x, y, a, tx, ty, speed[4];
 	bool moving, selected;
 
 	public:
-	void init(float x, float y, int type, int team)
+	void init(float x, float y, unit_t type, int team)
 	{
 		Unit::x = x;
 		Unit::y = y;
@@ -343,29 +365,37 @@ class Unit
 		Unit::team = team;
 		switch(type)
 		{
-		case 0:
+		case INFANTRY:
 			speed[0] = 0.005;
 			speed[1] = 0.03;
 			speed[2] = 0.02;
 			speed[3] = 0.01;
 			break;
-		case 1:
+		case ROCKET:
 			speed[0] = 0.003;
 			speed[1] = 0.025;
 			speed[2] = 0.015;
 			speed[3] = 0.005;
 			break;
-		case 2:
+		case TANK:
 			speed[0] = 0.001;
 			speed[1] = 0.015;
 			speed[2] = 0.01;
 			speed[3] = 0.005;
+			break;
+		case BASE:
+			speed[0] = 0;
+			speed[1] = 0;
+			speed[2] = 0;
+			speed[3] = 0;
 			break;
 		}
 	}
 
 	void target(float x, float y)
 	{
+		if(type == BASE)
+			return;
 		moving = true;
 		tx = x;
 		ty = y;
@@ -434,7 +464,7 @@ class Unit
 		const int s = MINIMAP_SHRINK;
 		int sw, sh;
 		SDL_GetWindowSize(window, &sw, &sh);
-		int xo = sw - w/s - UI_BORDER;
+		int xo = sw - (w/s)/2 - UI_BORDER - ACTIONMENU_BOXWIDTH/2;
 		int yo = UI_BORDER;
 		switch(team)
 		{
@@ -454,6 +484,35 @@ class Unit
 		SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xff);
 	}
 
+	bool busy()
+	{
+		if(moving)
+			return true;
+		return false;
+	}
+
+	void stop()
+	{
+		moving = false;
+	}
+
+	friend class Game;
+};
+
+class Player
+{
+	int team;
+	bool ai;
+	Unit *base;
+
+	public:
+	void init(int team, bool ai, Unit *base)
+	{
+		Player::team = team;
+		Player::ai = ai;
+		Player::base = base;
+	}
+
 	friend class Game;
 };
 
@@ -466,6 +525,9 @@ class Game
 	int mouseX, mouseY;
 	Unit *units[MAX_UNITS];
 	const Uint8 *keyboardState;
+	Player players[2];
+	action_t actionMenu[ACTIONMENU_SIZE];
+	int totalSelected;
 
 	public:
 	Game()
@@ -488,7 +550,7 @@ class Game
 		freeMedia();
 	}
 
-	void addUnit(float x, float y, int type, int team)
+	void addUnit(float x, float y, unit_t type, int team)
 	{
 		int i;
 		for(i = 0; units[i] != nullptr; i++);
@@ -507,7 +569,54 @@ class Game
 		SDL_GetMouseState(&mouseX, &mouseY);
 		for(int i = 0; i < MAX_UNITS; i++)
 			units[i] = nullptr;
-		addUnit(level.w/2, level.h/2, 0, 0);
+		for(int i = 0; i < ACTIONMENU_SIZE; i++)
+			actionMenu[i] = NO_ACTION;
+		totalSelected = 0;
+		addUnit(level.w/2, level.h/2, INFANTRY, 0);
+	}
+
+	const char *actionString(action_t a)
+	{
+		switch(a)
+		{
+		case NO_ACTION:
+			return "No action";
+		case DESELECT_ALL:
+			return "Deselect all";
+		case CANCEL_TASKS:
+			return "Cancel tasks";
+		default:
+			return "";
+		}
+	}
+	
+	void drawActionMenu()
+	{
+		int sw, sh;
+		SDL_GetWindowSize(window, &sw, &sh);
+		int xo = sw - UI_BORDER - ACTIONMENU_BOXWIDTH;
+		int yo = UI_BORDER + level.h / MINIMAP_SHRINK + UI_BORDER;
+		for(int i = 0; i < ACTIONMENU_SIZE; i++)
+		{
+			SDL_SetRenderDrawColor(renderer, 0xff, 0xff, 0xff, 0x88);
+			SDL_Rect r;
+			r.x = xo;
+			r.y = yo + (ACTIONMENU_BOXHEIGHT + UI_BORDER) * i;
+			r.w = ACTIONMENU_BOXWIDTH;
+			r.h = ACTIONMENU_BOXHEIGHT;
+			SDL_RenderFillRect(renderer, &r);
+			if(actionMenu[i] != NO_ACTION)
+			{
+				SDL_SetRenderDrawColor(renderer, 0xff, 0xff, 0xff, 0xff);
+				SDL_RenderDrawRect(renderer, &r);
+				float ts = 2;
+				const char *str = actionString(actionMenu[i]);
+				int x = r.x + ACTIONMENU_BOXWIDTH/2 - (strlen(str)/2)*6*ts;
+				int y = r.y + ACTIONMENU_BOXHEIGHT/2 - 8*ts/2;
+				drawText(x, y, str, ts);
+			}
+		}
+		SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xff);
 	}
 
 	void draw()
@@ -521,7 +630,7 @@ class Game
 		for(int i = 0; i < MAX_UNITS; i++)
 			if(units[i] != nullptr)
 				units[i]->populateMinimap(level.w, level.h);
-		drawText(5, 5, "This is a test!", 2);
+		drawActionMenu();
 		SDL_RenderPresent(renderer);
 	}
 
@@ -532,7 +641,7 @@ class Game
 		int sw, sh;
 		SDL_GetWindowSize(window, &sw, &sh);
 		int x1, x2, y1, y2;
-		x1 = sw - level.w / MINIMAP_SHRINK - UI_BORDER;
+		x1 = sw - (level.w/MINIMAP_SHRINK)/2 - UI_BORDER - ACTIONMENU_BOXWIDTH/2;
 		x2 = sw - UI_BORDER;
 		y1 = UI_BORDER;
 		y2 = UI_BORDER + level.h / MINIMAP_SHRINK;
@@ -542,6 +651,35 @@ class Game
 			cameraY = (my - y1) * MINIMAP_SHRINK;
 			return true;
 		}
+
+		clicking = false;
+
+		for(int i = 0; i < ACTIONMENU_SIZE; i++)
+		{
+			x1 = sw - UI_BORDER - ACTIONMENU_BOXWIDTH;
+			y1 = UI_BORDER*2 + level.h / MINIMAP_SHRINK + (ACTIONMENU_BOXHEIGHT + UI_BORDER) * i;
+			x2 = sw - UI_BORDER;
+			y2 = y1 + ACTIONMENU_BOXHEIGHT;
+			if(!(mx > x1 && my > y1 && mx < x2 && my < y2))
+				continue;
+
+			int j;
+			switch(actionMenu[i])
+			{
+			default:
+				return true;
+			case DESELECT_ALL:
+				selectAll(false);
+				return true;
+			case CANCEL_TASKS:
+				for(j = 0; j < MAX_UNITS; j++)
+					if(units[j] != nullptr)
+						if(units[j]->selected)
+							units[j]->stop();
+				return true;
+			}
+		}
+
 		return false;
 	}
 
@@ -565,6 +703,7 @@ class Game
 			{
 				select = true;
 				units[i]->selected = !keyboardState[SDL_SCANCODE_LSHIFT];
+				totalSelected += units[i]->selected - !units[i]->selected;
 			}
 		}
 		if(select)
@@ -580,36 +719,65 @@ class Game
 	{
 		for(int i = 0; i < MAX_UNITS; i++)
 			if(units[i] != nullptr)
+			{
 				units[i]->selected = select;
+				totalSelected += select;
+				totalSelected -= !select;
+			}
+	}
+
+	void clearActionMenu()
+	{
+		for(int i = 0; i < ACTIONMENU_SIZE; i++)
+			actionMenu[i] = NO_ACTION;
+	}
+
+	void addAction(action_t a)
+	{
+		int i;
+		for(i = 0; actionMenu[i] != NO_ACTION && i < ACTIONMENU_SIZE; i++);
+		if(i >= ACTIONMENU_SIZE)
+			return;
+		actionMenu[i] = a;
 	}
 
 	void update()
 	{
 		redraw = true;
+
+		clearActionMenu();
+		if(totalSelected > 0)
+			addAction(DESELECT_ALL);
+
 		int mx, my;
 		SDL_GetMouseState(&mx, &my);
 		if(panning)
 		{
 			cameraX += ((mouseX-mx)/8.0)/scale;
 			cameraY += ((mouseY-my)/8.0)/scale;
-			if(cameraX < 0) cameraX = 0;
-			if(cameraY < 0) cameraY = 0;
-			if(cameraX > level.w) cameraX = level.w;
-			if(cameraY > level.h) cameraY = level.h;
 		}
+		if(cameraX < 0) cameraX = 0;
+		if(cameraY < 0) cameraY = 0;
+		if(cameraX > level.w) cameraX = level.w;
+		if(cameraY > level.h) cameraY = level.h;
 		mouseX = mx;
 		mouseY = my;
 
+		bool busyUnits = false;
 		for(int i = 0; i < MAX_UNITS; i++)
 			if(units[i] != nullptr)
+			{
 				units[i]->update(level.getTile(units[i]->x, units[i]->y));
+				if(units[i]->selected)
+					if(units[i]->busy())
+						busyUnits = true;
+			}
+		if(busyUnits)
+			addAction(CANCEL_TASKS);
 
 		if(clicking)
 			if(!clickUI())
-			{
-				clicking = false;
 				clickMap();
-			}
 
 		cameraX += (keyboardState[SDL_SCANCODE_RIGHT] - keyboardState[SDL_SCANCODE_LEFT]) / (8.0*scale) * 8;
 		cameraY += (keyboardState[SDL_SCANCODE_DOWN] - keyboardState[SDL_SCANCODE_UP]) / (8.0*scale) * 8;
@@ -662,6 +830,13 @@ class Game
 				case SDLK_a:
 					if(keyboardState[SDL_SCANCODE_LCTRL])
 						selectAll(!keyboardState[SDL_SCANCODE_LSHIFT]);
+					break;
+				}
+			case SDL_WINDOWEVENT:
+				switch(event.window.event)
+				{
+				case SDL_WINDOWEVENT_RESIZED:
+					SDL_SetWindowSize(window, event.window.data1, event.window.data2);
 					break;
 				}
 			}
